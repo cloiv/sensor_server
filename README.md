@@ -18,80 +18,119 @@ Client = Host B ──HTTP/WS──> Container C (FastAPI Server)
 
 ```
 sensor_server/
-├── backend/
-│   └── main.py              # FastAPI server
+├── src/
+│   └── sensor_server/           # Installable Python package
+│       ├── __init__.py
+│       ├── cli.py               # CLI entry point
+│       ├── core/                # Pure business logic (no HTTP)
+│       │   ├── __init__.py
+│       │   ├── processing.py    # Numpy operations
+│       │   ├── streaming.py     # Data generation
+│       │   └── storage.py       # Array storage
+│       └── api/                 # FastAPI layer
+│           ├── __init__.py
+│           ├── app.py           # App factory
+│           ├── dependencies.py  # Shared state
+│           ├── websocket.py     # WebSocket handler
+│           └── routes/
+│               ├── __init__.py
+│               ├── arrays.py    # /upload, /arrays, /array/{id}
+│               ├── control.py   # /control/start, /control/stop
+│               └── health.py    # /health
 ├── client/
-│   ├── client.py            # Python client
-│   └── plot_client.py       # Live plotting client
+│   ├── client.py                # Python client
+│   └── plot_client.py           # Live plotting client
 ├── tests/
-│   ├── conftest.py          # Pytest fixtures
-│   ├── test_http_endpoints.py
-│   └── test_websocket.py
+│   ├── conftest.py
+│   ├── unit/                    # Tests for core/ modules
+│   │   ├── test_processing.py
+│   │   ├── test_storage.py
+│   │   └── test_streaming.py
+│   └── integration/             # Tests for api/ endpoints
+│       ├── test_http_endpoints.py
+│       └── test_websocket.py
+├── pyproject.toml
 ├── Dockerfile
-├── pytest.ini
-├── requirements.txt
 └── README.md
 ```
 
 ## Installation
 
+### From Source (Development)
+
 ```bash
+# Clone the repository
+git clone https://github.com/cloiv/sensor_server.git
+cd sensor_server
+
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # or: venv\Scripts\activate  # Windows
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in development mode with all dependencies
+pip install -e ".[dev,client]"
 ```
+
+### Server Only
+
+```bash
+pip install -e .
+```
+
+## Running the Server
+
+```bash
+# Using the CLI
+sensor-server run
+
+# With custom host/port
+sensor-server run --host 0.0.0.0 --port 8080
+
+# With auto-reload for development
+sensor-server run --reload
+
+# Using uvicorn directly
+uvicorn sensor_server.api.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+The server will be available at `http://localhost:8000`.
 
 ## Running Tests
 
 ```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
 # Run all tests
 pytest
 
 # Run with verbose output
 pytest -v
 
-# Run specific test file
-pytest tests/test_http_endpoints.py
+# Run only unit tests (fast, no HTTP)
+pytest tests/unit/
 
-# Run specific test class
-pytest tests/test_websocket.py::TestWebSocketConnection
+# Run only integration tests
+pytest tests/integration/
 
-# Run with coverage (requires pytest-cov)
+# Run with coverage
 pip install pytest-cov
-pytest --cov=backend --cov-report=term-missing
+pytest --cov=sensor_server --cov-report=term-missing
 ```
 
 ### Test Coverage
 
-The test suite covers:
+The test suite includes:
 
-- **HTTP Endpoints** (15 tests)
-  - Health check endpoint
-  - Numpy file upload (valid/invalid files, multiple dtypes)
-  - Array listing and retrieval
-  - Streaming control endpoints
+- **Unit Tests** (core modules, no HTTP overhead)
+  - `test_storage.py` - ArrayStorage class
+  - `test_streaming.py` - DataFrame and DataStreamer
+  - `test_processing.py` - Numpy serialization utilities
 
-- **WebSocket Streaming** (9 tests)
-  - Connection handling
-  - Start/stop streaming
-  - Data packet format validation
-  - Multiple concurrent clients
-
-## Running the Server
-
-```bash
-# Option 1: Direct run
-python backend/main.py
-
-# Option 2: Using uvicorn directly (recommended for development)
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-The server will be available at `http://localhost:8000`.
+- **Integration Tests** (API endpoints)
+  - `test_http_endpoints.py` - Upload, list, get arrays, control
+  - `test_websocket.py` - WebSocket streaming
 
 ## API Endpoints
 
@@ -138,8 +177,6 @@ python client/client.py stream --duration 5
 
 ### Live Plotting
 
-The plot client provides real-time visualization of streamed data:
-
 ```bash
 # Start the live plot (requires matplotlib)
 python client/plot_client.py
@@ -148,20 +185,12 @@ python client/plot_client.py
 python client/plot_client.py --server http://192.168.1.100:8000
 ```
 
-The plot window shows:
-- **Top panel**: Live streaming signal (sine wave + noise)
-- **Bottom panel**: Rolling mean and standard deviation
-
-Close the plot window to disconnect.
-
 ### Programmatic Usage
 
 ```python
 from client.client import NumpyClient
 import numpy as np
-import asyncio
 
-# Create client
 client = NumpyClient("http://localhost:8000")
 
 # Upload a numpy array
@@ -176,114 +205,45 @@ print(client.list_arrays())
 downloaded = client.get_array(0)
 print(f"Downloaded shape: {downloaded.shape}")
 
-# Streaming with custom callback
-def handle_data(data):
-    x = np.array(data["x"])
-    y = np.array(data["y"])
-    print(f"Received: {len(x)} points, mean={y.mean():.3f}")
-
-async def stream_demo():
-    await client.connect_streaming(on_data=handle_data, auto_start=True)
-
-# Run streaming for a few seconds
-asyncio.run(stream_demo())
-
 client.close()
 ```
 
-## How It Works
+### Using Core Modules Directly
 
-### Uploading Numpy Data
-
-1. Client saves numpy array to bytes using `np.save()`
-2. Sends as multipart file upload to `/upload`
-3. Server reads bytes with `np.load()` and stores the array
+The `core` modules have no HTTP dependencies and can be used standalone:
 
 ```python
-# Client side
-buffer = io.BytesIO()
-np.save(buffer, array)
-buffer.seek(0)
-# Send buffer as file upload
+from sensor_server.core import ArrayStorage, DataStreamer, load_array_from_bytes
 
-# Server side
-contents = await file.read()
-buffer = io.BytesIO(contents)
-array = np.load(buffer, allow_pickle=False)
-```
+# Use storage directly
+storage = ArrayStorage()
+storage.add(np.array([1, 2, 3]))
+print(storage.list_all())
 
-### Streaming Numpy Data
-
-1. Client connects to WebSocket at `/ws/stream`
-2. Sends `{"action": "start"}` to begin streaming
-3. Server generates data and broadcasts to all connected clients
-4. Client sends `{"action": "stop"}` to stop streaming
-
-```python
-# Server generates data
-x = np.linspace(t, t + 2 * np.pi, 100)
-y = np.sin(x) + noise
-
-# Sends as JSON
-await ws.send_json({
-    "type": "data",
-    "timestamp": t,
-    "x": x.tolist(),
-    "y": y.tolist()
-})
+# Generate streaming data without a server
+streamer = DataStreamer(sample_rate=0.1, points_per_frame=50)
+for _ in range(10):
+    frame = streamer.generate_frame()
+    print(f"t={frame.timestamp:.1f}, mean={frame.y.mean():.3f}")
 ```
 
 ## Docker Deployment
 
-A `Dockerfile` is included in the project:
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install system dependencies for numpy
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir \
-    fastapi>=0.100.0 \
-    "uvicorn[standard]>=0.23.0" \
-    numpy>=1.24.0 \
-    python-multipart>=0.0.6
-
-# Copy backend code
-COPY backend/ ./backend/
-
-EXPOSE 8000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
-
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Build and run:
-
 ```bash
 # Build the image
-docker build -t numpy-server .
+docker build -t sensor-server .
 
 # Run the container
-docker run -p 8000:8000 numpy-server
+docker run -p 8000:8000 sensor-server
 
 # Run in detached mode
-docker run -d -p 8000:8000 --name numpy-server numpy-server
+docker run -d -p 8000:8000 --name sensor-server sensor-server
 
 # Check logs
-docker logs -f numpy-server
+docker logs -f sensor-server
 
 # Stop the container
-docker stop numpy-server
+docker stop sensor-server
 ```
 
 ### Connecting from Client to Container
@@ -298,6 +258,21 @@ python client/client.py --server http://<container-host-ip>:8000 health
 # Live plotting to container
 python client/plot_client.py --server http://<container-host-ip>:8000
 ```
+
+## Package Architecture
+
+The package separates concerns into two layers:
+
+| Layer | Location | Dependencies | HTTP-aware? |
+|-------|----------|--------------|-------------|
+| Core | `sensor_server/core/` | numpy, stdlib | No |
+| API | `sensor_server/api/` | FastAPI, core | Yes |
+
+This separation allows:
+- Importing `core` modules without running a server
+- Fast unit tests with no HTTP overhead
+- Swapping the API layer (e.g., gRPC) without touching business logic
+- Using core modules in CLI tools, Jupyter notebooks, or other services
 
 ## Protocol Details
 
@@ -337,10 +312,3 @@ python client/plot_client.py --server http://<container-host-ip>:8000
     "index": 0
 }
 ```
-
-## Notes
-
-- The streaming demo generates sine wave data with noise to simulate sensor readings
-- In production, replace the `stream_data()` function with actual sensor data
-- The server supports multiple concurrent WebSocket clients
-- Use HTTP control endpoints (`/control/start`, `/control/stop`) when you need to control streaming from non-WebSocket clients (e.g., curl, other services)

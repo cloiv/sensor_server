@@ -1,6 +1,4 @@
-"""
-Pytest configuration and fixtures for backend tests.
-"""
+"""Pytest configuration and fixtures."""
 
 import io
 from typing import Generator
@@ -9,22 +7,20 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, received_arrays, active_connections
+from sensor_server.api.app import create_app
+from sensor_server.api.dependencies import reset_state
 
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
     """Create a test client and clean up state after each test."""
-    # Clear state before test
-    received_arrays.clear()
-    active_connections.clear()
+    reset_state()
+    app = create_app()
 
     with TestClient(app) as test_client:
         yield test_client
 
-    # Clear state after test
-    received_arrays.clear()
-    active_connections.clear()
+    reset_state()
 
 
 @pytest.fixture
